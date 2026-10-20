@@ -15,10 +15,11 @@
 param([switch]$Quiet)
 
 $ErrorActionPreference = 'Stop'
+$lockAcquired = $false
 # 全局兜底：任何未捕获的终止性错误都记录下来（否则脚本会静默退出、无法排查）
 trap {
     try { "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] FATAL: $($_.Exception.Message) @line $($_.InvocationInfo.ScriptLineNumber)" | Out-File -FilePath (Join-Path $PSScriptRoot 'github-fix.log') -Append -Encoding utf8 } catch {}
-    Remove-Item (Join-Path $env:TEMP 'dsh-github-fix.lock') -Force -ErrorAction SilentlyContinue
+    if ($lockAcquired) { Remove-Item (Join-Path $env:TEMP 'dsh-github-fix.lock') -Force -ErrorAction SilentlyContinue }
     exit 1
 }
 $HOSTS  = 'C:\Windows\System32\drivers\etc\hosts'
@@ -35,7 +36,7 @@ function Log($m) {
     try { if ((Test-Path $LOG) -and (Get-Item $LOG).Length -gt 1MB) { Move-Item $LOG "$LOG.old" -Force -ErrorAction SilentlyContinue } } catch {}
     "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $m" | Out-File -FilePath $LOG -Append -Encoding utf8
 }
-function Remove-Lock { Remove-Item $lockFile -Force -ErrorAction SilentlyContinue }
+function Remove-Lock { if ($lockAcquired) { Remove-Item $lockFile -Force -ErrorAction SilentlyContinue } }
 # 原子写 hosts：先写临时文件再 Move-Item 覆盖，避免并发读取到半截文件
 function Write-HostsFile([string[]]$lines) {
     $tmp = "$HOSTS.dsh-tmp"
@@ -43,7 +44,17 @@ function Write-HostsFile([string[]]$lines) {
     Move-Item -Path $tmp -Destination $HOSTS -Force
 }
 
-# ---------- 0. 并发防重入（计划任务每 30 分钟一次，防止上次还没跑完又开一次） ----------
+# ---------- 0. 自我提权（改 hosts 需要管理员） ----------
+$principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+$isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    Write-Step '需要管理员权限，正在请求提权 —— 请在弹窗（UAC）中点击「是」…'
+    $qArg = ''; if ($Quiet) { $qArg = ' -Quiet' }
+    $p = Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"$qArg" -Verb RunAs -Wait -PassThru
+    exit $p.ExitCode
+}
+
+# ---------- 1. 并发防重入（仅管理员实例持锁；提权前持锁会挡住提权后的子进程） ----------
 if (Test-Path $lockFile) {
     $oldPid = 0
     try { $oldPid = [int](Get-Content $lockFile -Raw) } catch { $oldPid = 0 }
@@ -54,17 +65,7 @@ if (Test-Path $lockFile) {
     Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
 }
 [System.IO.File]::WriteAllText($lockFile, [string]$PID)
-
-# ---------- 1. 自我提权（改 hosts 需要管理员） ----------
-$principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-$isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
-    Write-Step '需要管理员权限，正在请求提权 —— 请在弹窗（UAC）中点击「是」…'
-    $qArg = ''; if ($Quiet) { $qArg = ' -Quiet' }
-    $p = Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"$qArg" -Verb RunAs -Wait -PassThru
-    Remove-Lock
-    exit $p.ExitCode
-}
+$lockAcquired = $true
 
 # ---------- 2. TLS 握手测试（连接 5 秒硬超时 + 握手后证书域名校验） ----------
 # 注意：不要用 BeginAuthenticateAsClient 异步版 —— PS 5.1 的脚本块回调在 .NET 线程池线程
@@ -171,6 +172,7 @@ $ok = @($results | Where-Object Ok | Sort-Object Ms)
 if ($ok.Count -eq 0) {
     Write-Fail '所有候选 IP 的 TLS 握手均失败 —— 可能是网络环境整体封锁，请改用代理/VPN。'
     Log 'fix-github: ALL TLS FAILED - network may be fully blocked'
+    Disable-HostsEntry 'github.com'
     Wait-Exit
     Remove-Lock
     exit 1

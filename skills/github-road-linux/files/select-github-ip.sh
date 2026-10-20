@@ -77,7 +77,9 @@ for host in $HOSTS; do
 done
 
 RESULTS="$(mktemp "${TMPDIR:-/tmp}/gh-road.XXXXXX")"
-PIN_TMP="$(mktemp "${TMPDIR:-/tmp}/gh-pin.XXXXXX")"
+PIN_DIR="$(dirname "$PIN_FILE")"
+mkdir -p "$PIN_DIR" 2>/dev/null || { say "[!!] cannot create pin directory: $PIN_DIR"; exit 1; }
+PIN_TMP="$(mktemp "$PIN_DIR/.gh-pin.XXXXXX")" || { say "[!!] cannot create temp file in $PIN_DIR"; exit 1; }
 trap 'rm -f "$RESULTS" "$PIN_TMP" "${PIN_TMP}.final"' EXIT
 
 # Probe all candidates in parallel. Each writes "<host> <ip> <ok> <avg>".
@@ -134,7 +136,10 @@ done
     printf '# format: <hostname> <ip>   -- consumed by libpin.so (LD_PRELOAD, in order)\n'
     cat "$PIN_TMP"
 } >"${PIN_TMP}.final"
-mkdir -p "$(dirname "$PIN_FILE")" 2>/dev/null
-mv -f "${PIN_TMP}.final" "$PIN_FILE"
+if ! mv -f "${PIN_TMP}.final" "$PIN_FILE"; then
+    say "[!!] failed to update pin file: $PIN_FILE"
+    log "error: failed to replace pin file $PIN_FILE"
+    exit 1
+fi
 say "[-] pin file updated: $PIN_FILE"
 log "wrote pin file $PIN_FILE ($(grep -vc '^#' "$PIN_FILE" 2>/dev/null || echo 0) entries)"

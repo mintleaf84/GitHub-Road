@@ -5,9 +5,16 @@ set -u
 
 MARK="github-road-linux"
 BASHRC="$HOME/.bashrc"
+if [ -L "$BASHRC" ]; then
+    # sed -i would replace the symlink itself; edit the file it points to instead.
+    BASHRC_TARGET="$(readlink -f "$BASHRC" 2>/dev/null || true)"
+    [ -n "$BASHRC_TARGET" ] || { echo "[uninstall] cannot resolve symlink: $BASHRC"; exit 1; }
+else
+    BASHRC_TARGET="$BASHRC"
+fi
 
 if grep -q ">>> ${MARK} >>>" "$BASHRC" 2>/dev/null; then
-    sed -i "/# >>> ${MARK} >>>/,/# <<< ${MARK} <<</d" "$BASHRC"
+    sed -i "/# >>> ${MARK} >>>/,/# <<< ${MARK} <<</d" "$BASHRC_TARGET"
     echo "[uninstall] removed bashrc hook"
 else
     echo "[uninstall] no bashrc hook found"
