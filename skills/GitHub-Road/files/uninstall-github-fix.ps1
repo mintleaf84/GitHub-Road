@@ -14,7 +14,7 @@ $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.
 $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     Write-Host '[!] 需要管理员权限，正在请求提权 —— 请在弹窗（UAC）中点击「是」…'
-    $p = Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs -Wait -PassThru
+    $p = Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -TaskName `"$TaskName`"" -Verb RunAs -Wait -PassThru
     exit $p.ExitCode
 }
 

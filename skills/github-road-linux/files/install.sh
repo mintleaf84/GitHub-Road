@@ -31,7 +31,7 @@ log "libpin.so built and sanity-checked"
 
 # 2. initial IP selection -----------------------------------------------------
 log "selecting initial GitHub IPs (this probes candidate IPs, ~10-30s)"
-GITHUB_ROAD_PIN="$PIN_FILE" GITHUB_ROAD_LOG="$LOG_FILE" bash "$SELECT" || true
+GITHUB_ROAD_PIN="$PIN_FILE" GITHUB_ROAD_LOG="$LOG_FILE" bash "$SELECT"
 
 # 3. ~/.bashrc hook (idempotent) ---------------------------------------------
 if grep -q ">>> ${MARK} >>>" "$BASHRC" 2>/dev/null; then
@@ -52,7 +52,14 @@ else
 fi
 
 # 4. crontab auto-heal (idempotent) ------------------------------------------
-CRON_LINE="*/30 * * * * GITHUB_ROAD_PIN=$PIN_FILE GITHUB_ROAD_LOG=$LOG_FILE GITHUB_ROAD_QUIET=1 /bin/bash $SELECT >/dev/null 2>&1"
+# Quote one value for the /bin/sh command line in crontab; cron also gives %
+# special meaning, so escape it before the shell sees the quoted string.
+cron_quote() {
+    local s=${1//%/\\%}
+    s=${s//\'/\'\\\'\'}
+    printf "'%s'" "$s"
+}
+CRON_LINE="*/30 * * * * GITHUB_ROAD_PIN=$(cron_quote "$PIN_FILE") GITHUB_ROAD_LOG=$(cron_quote "$LOG_FILE") GITHUB_ROAD_QUIET=1 /bin/bash $(cron_quote "$SELECT") >/dev/null 2>&1"
 CUR="$(crontab -l 2>/dev/null || true)"
 NEW="$(printf '%s\n' "$CUR" | sed "/# >>> ${MARK} >>>/,/# <<< ${MARK} <<</d" | grep -v '^[[:space:]]*$' || true)"
 {

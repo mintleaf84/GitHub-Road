@@ -42,8 +42,9 @@ Write-Host "removed $removed lines; hosts now $($kept.Count) lines"
 
 # 3. run the idempotent GitHub fix (real hosts-path verification included)
 Write-Host '[3/4] running the GitHub fix...'
-Remove-Item "$env:TEMP\dsh-github-fix.lock" -Force -ErrorAction SilentlyContinue
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'F:\Turbulence\fix-github.ps1' -Quiet
+$fix = Join-Path $PSScriptRoot 'fix-github.ps1'
+if (-not (Test-Path $fix)) { Write-Host "ERROR: fix-github.ps1 not found next to this script: $fix"; exit 1 }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $fix -Quiet
 Write-Host "fix exit: $LASTEXITCODE"
 
 # 4. real hosts-path verify
