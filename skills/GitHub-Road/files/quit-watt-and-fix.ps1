@@ -45,7 +45,9 @@ Write-Host '[3/4] running the GitHub fix...'
 $fix = Join-Path $PSScriptRoot 'fix-github.ps1'
 if (-not (Test-Path $fix)) { Write-Host "ERROR: fix-github.ps1 not found next to this script: $fix"; exit 1 }
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $fix -Quiet
-Write-Host "fix exit: $LASTEXITCODE"
+$fixExitCode = $LASTEXITCODE
+Write-Host "fix exit: $fixExitCode"
+if ($fixExitCode -ne 0) { exit $fixExitCode }
 
 # 4. real hosts-path verify
 Write-Host '[4/4] verifying via hosts path...'
