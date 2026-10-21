@@ -15,6 +15,7 @@ LOG_FILE="${GITHUB_ROAD_LOG:-$HOME/.hermes/github-road.log}"
 SELECT="$HERE/select-github-ip.sh"
 SO="$HERE/libpin.so"
 SRC="$HERE/libpin.c"
+DAEMON="$HERE/github-road-daemon.sh"
 BASHRC="$HOME/.bashrc"
 MARK="github-road-linux"
 
@@ -69,6 +70,23 @@ NEW="$(printf '%s\n' "$CUR" | sed "/# >>> ${MARK} >>>/,/# <<< ${MARK} <<</d" | g
     printf '# <<< %s <<<\n' "$MARK"
 } | crontab -
 log "crontab auto-heal installed (re-selects IPs every 30 minutes)"
+
+# 5. verify a cron daemon actually runs; without one the entry is inert. -------
+cron_running=0
+if ps -e 2>/dev/null | grep -qiE '[c]rond?$'; then
+    cron_running=1
+elif command -v systemctl >/dev/null 2>&1 &&
+     { systemctl is-active --quiet cron 2>/dev/null ||
+       systemctl is-active --quiet crond 2>/dev/null; }; then
+    cron_running=1
+fi
+if [ "$cron_running" = 1 ]; then
+    log "cron daemon detected - the auto-heal entry will actually run"
+else
+    printf '[install] WARNING: 未检测到 cron/crond 守护进程在运行，刚装好的 30 分钟自愈不会自动执行。\n' >&2
+    printf '[install] 备选（常驻自愈 loop，单实例）：\n' >&2
+    printf '[install]   nohup bash %s >> %s 2>&1 &\n' "$DAEMON" "$LOG_FILE" >&2
+fi
 
 log "done."
 log "activate now:  source ~/.bashrc   (or open a new shell)"
