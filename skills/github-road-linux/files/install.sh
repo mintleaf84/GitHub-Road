@@ -92,3 +92,6 @@ log "done."
 log "activate now:  source ~/.bashrc   (or open a new shell)"
 log "verify:        env LD_PRELOAD=$SO curl -sI https://github.com | head -1"
 [ -f "$PIN_FILE" ] && sed 's/^/[pin] /' "$PIN_FILE"
+CAND_FILE="${GITHUB_ROAD_CANDIDATES_FILE:-$HOME/.hermes/github-candidates}"
+[ -f "$CAND_FILE" ] && printf '[learned] %s 个已验证候选 IP 已沉淀到 %s（每轮择优自动更新，可手工追加）\n' \
+    "$(grep -vc '^#' "$CAND_FILE")" "$CAND_FILE"

@@ -2,9 +2,11 @@
 # select-github-ip.sh -- Linux port of GitHub-Road's "verify + pick best IP" core.
 #
 # For each managed host:
-#   1. seed candidates: current local DNS answer + DoH-resolved IPs from public
-#      resolvers (the local DNS is often exactly the broken part on target
-#      machines, so getent alone is untrusted) + the hardcoded fallback pool
+#   1. seed candidates: IPs this run's predecessors already proved reachable
+#      (the learned pool, see GITHUB_ROAD_CANDIDATES_FILE), then the current local
+#      DNS answer, then DoH-resolved IPs from public resolvers (the local DNS is
+#      often exactly the broken part on target machines, so getent alone is
+#      untrusted), then the hardcoded fallback pool
 #   2. probe every candidate IP (real HTTPS over TLS via curl --resolve) and ask
 #      whether it actually *serves that host*, not whether it returns a status
 #   3. rank the usable IPs, by (git-endpoint desc, passes desc, avg latency asc),
@@ -12,6 +14,8 @@
 #   4. if none answered at all, KEEP the previous pins for that host (marked
 #      stale) instead of dropping them -- on these networks DNS is the broken
 #      part, so falling back to it would turn a slow link into a total outage.
+#   5. append every IP that passed validation to the learned pool, so an address
+#      discovered once via DoH survives DoH being blocked later.
 # Several IPs per host are kept on purpose: libpin.so hands them to the client
 # as a failover list, which is what makes this usable on an intermittently
 # blocked link where any single IP may reset.
@@ -35,6 +39,13 @@
 #   fatal: '<url>' does not appear to be a git repository
 # while curl and the REST API work perfectly.
 #
+# Why a learned pool at all: the hardcoded pools are a snapshot that nobody
+# refreshes on a running machine, and DoH -- the thing that would replace them --
+# is itself a reachability question (on the machine this was written on, two of
+# the three providers answer and Cloudflare does not). Without persistence, an IP
+# that was proven good once silently disappears the moment DoH stops naming it.
+# So the learned pool is seeded *first*: measured truth outranks any guess.
+#
 # Candidate probes run in parallel with fail-fast, so a 30-minute cron run
 # finishes in seconds even when most IPs are dead.
 #
@@ -43,6 +54,8 @@
 #
 # Env overrides:
 #   GITHUB_ROAD_PIN              pin file path   (default ~/.hermes/github-pin)
+#   GITHUB_ROAD_CANDIDATES_FILE  learned IP pool (default ~/.hermes/github-candidates)
+#   GITHUB_ROAD_MAX_LEARNED      IPs kept per host in that pool (default 12)
 #   GITHUB_ROAD_LOG              log path        (default ~/.hermes/github-road.log)
 #   GITHUB_ROAD_HOSTS            hosts to manage (see HOSTS below)
 #   GITHUB_ROAD_CONNECT_TIMEOUT  curl connect timeout seconds (default 5)
@@ -57,6 +70,8 @@
 set -u
 
 PIN_FILE="${GITHUB_ROAD_PIN:-$HOME/.hermes/github-pin}"
+CAND_FILE="${GITHUB_ROAD_CANDIDATES_FILE:-$HOME/.hermes/github-candidates}"
+MAX_LEARNED="${GITHUB_ROAD_MAX_LEARNED:-12}"
 LOG="${GITHUB_ROAD_LOG:-$HOME/.hermes/github-road.log}"
 CONNECT_TIMEOUT="${GITHUB_ROAD_CONNECT_TIMEOUT:-5}"
 MAX_TIME="${GITHUB_ROAD_MAX_TIME:-10}"
@@ -123,6 +138,39 @@ candidates_for() {
         *)
             printf '%s\n' "$GITHUB_CANDIDATES" ;;
     esac
+}
+
+# --- learned pool -------------------------------------------------------------
+# "<hostname> <ip>" per line, same format as the pin file, and just as editable:
+# paste known-good addresses here to make them permanent candidates.
+declare -A LEARNED=()
+LEARNED_HOST_ORDER=""
+LEARNED_DIRTY=0
+
+load_learned() {
+    [ -f "$CAND_FILE" ] || return 0
+    local h ip
+    while read -r h ip _; do
+        case "$h" in ''|\#*) continue ;; esac
+        case "$ip" in ''|*[!0-9.]*) continue ;; esac   # IPv4 only, as libpin.so is
+        [ -n "${LEARNED[$h]:-}" ] || LEARNED_HOST_ORDER="$LEARNED_HOST_ORDER $h"
+        LEARNED[$h]="${LEARNED[$h]:-}$ip "
+    done <"$CAND_FILE"
+}
+
+# Fold the IPs this run verified in front of what is already known for that host.
+merge_learned() { # $1 = host, $2 = verified IPs (space separated)
+    local h="$1" ip n=0 out=""
+    case "$2" in *[![:space:]]*) ;; *) return 0 ;; esac   # nothing verified
+    for ip in $2 ${LEARNED[$h]:-}; do
+        case " $out " in *" $ip "*) continue ;; esac
+        out="$out $ip"
+        n=$((n + 1))
+        [ "$n" -ge "$MAX_LEARNED" ] && break
+    done
+    [ "${LEARNED[$h]:-}" != "$out " ] && LEARNED_DIRTY=1
+    LEARNED[$h]="$out "
+    case " $LEARNED_HOST_ORDER " in *" $h "*) ;; *) LEARNED_HOST_ORDER="$LEARNED_HOST_ORDER $h" ;; esac
 }
 
 # "<path>:<accepted statuses>:<content-type prefix>" for a host, or the default.
@@ -213,15 +261,17 @@ if [ -f "$PIN_FILE" ]; then
     done <"$PIN_FILE"
 fi
 
-# Build the (host ip) work list: local DNS answer, then DoH seeds, then the
-# fallback pool; dedupe per host and cap the probe budget.
+# Build the (host ip) work list: what earlier runs proved, then the local DNS
+# answer, then DoH seeds, then the fallback pool; dedupe per host and cap the
+# probe budget.
+load_learned
 PAIRS=""
 for host in $HOSTS; do
     [ -n "${HOST_ALIAS[$host]:-}" ] && continue   # inherits another host's IPs
     dns_ip="$(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1; exit}')"
     seen=" "
     n=0
-    for ip in $dns_ip $(dns_seed "$host") $(candidates_for "$host"); do
+    for ip in ${LEARNED[$host]:-} $dns_ip $(dns_seed "$host") $(candidates_for "$host"); do
         [ -n "$ip" ] || continue
         case "$seen" in *" $ip "*) continue ;; esac
         seen="$seen$ip "
@@ -326,6 +376,7 @@ for host in $HOSTS; do
     kept="$(printf '%s\n' "$ranked" | head -n "$TOP_K" | wc -l)"
     read -r k1 pok pt pip <<<"$(printf '%s\n' "$ranked" | head -n 1)"
     PICKED[$host]="$(printf '%s\n' "$ranked" | head -n "$TOP_K" | awk '{print $4}' | tr '\n' ' ')"
+    merge_learned "$host" "$(printf '%s\n' "$ranked" | awk '{print $4}' | tr '\n' ' ')"
     say "[OK] $host -> $pip (+$((kept - 1)) failover) [best ${pok}/${PROBES}, avg ${pt}s]"
     log "pick $host -> ${PICKED[$host]}(best ${pok}/${PROBES})"
 
@@ -355,3 +406,21 @@ if ! mv -f "${PIN_TMP}.final" "$PIN_FILE"; then
 fi
 say "[-] pin file updated: $PIN_FILE"
 log "wrote pin file $PIN_FILE ($(grep -vc '^#' "$PIN_FILE" 2>/dev/null || echo 0) entries)"
+
+# Persist what this run verified, so an IP discovered through DoH is not lost the
+# day DoH stops answering. Best effort: the pin file above is the critical output.
+if [ "$LEARNED_DIRTY" = 1 ] && mkdir -p "$(dirname "$CAND_FILE")" 2>/dev/null; then
+    CAND_TMP="$(mktemp "$(dirname "$CAND_FILE")/.gh-cand.XXXXXX" 2>/dev/null)" || CAND_TMP=""
+    if [ -n "$CAND_TMP" ]; then
+        {
+            printf '# learned by select-github-ip.sh: IPs that passed the service check\n'
+            printf '# format: <hostname> <ip>  -- seeded as candidates first; safe to edit by hand\n'
+            for lh in $LEARNED_HOST_ORDER; do
+                for lip in ${LEARNED[$lh]}; do printf '%s %s\n' "$lh" "$lip"; done
+            done
+        } >"$CAND_TMP" 2>/dev/null \
+            && mv -f "$CAND_TMP" "$CAND_FILE" \
+            && log "learned pool: $(grep -vc '^#' "$CAND_FILE" 2>/dev/null || echo 0) IPs -> $CAND_FILE" \
+            || { say "[!!] cannot write learned pool: $CAND_FILE"; rm -f "$CAND_TMP"; }
+    fi
+fi

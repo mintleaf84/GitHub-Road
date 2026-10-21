@@ -77,6 +77,7 @@ env LD_PRELOAD="$SO" curl -s -o /dev/null -w '%{http_code} %{content_type}\n' \
 
 crontab -l | grep github-road-linux     # 看到 */30 那条
 cat ~/.hermes/github-pin                # 看到 github.com / api.github.com 等主机的 IP 列表
+cat ~/.hermes/github-candidates         # 每轮验证过的 IP 会沉淀在这里，下轮优先作为候选
 ```
 
 ## 常用操作
@@ -86,6 +87,8 @@ cat ~/.hermes/github-pin                # 看到 github.com / api.github.com 等
 | 立即修复（重选 IP 并验证） | `bash files/fix-now.sh` |
 | 仅在当前 shell 激活 | `source files/gh-road-env.sh` |
 | 手动重选 IP | `bash files/select-github-ip.sh` |
+| 钉住/补充候选 IP | `echo 'github.com 20.205.243.166' >> ~/.hermes/github-candidates` |
+| 查看当前候选学习池 | `cat ~/.hermes/github-candidates` |
 | 无 cron 时启动常驻自愈 | `nohup bash files/github-road-daemon.sh >> ~/.hermes/github-road.log 2>&1 &` |
 | 停止常驻自愈 | `kill $(cat ~/.hermes/.github-road-daemon.lock)` |
 | 查看自愈日志 | `tail -f ~/.hermes/github-road.log` |
@@ -96,7 +99,8 @@ cat ~/.hermes/github-pin                # 看到 github.com / api.github.com 等
 - **pin 文件** `~/.hermes/github-pin`：`<hostname> <ip>` 每行一条，同主机可多行（按优先级从上到下）。`libpin.so` 运行期读取，**改 IP 无需重新编译**。
 - **`libpin.so`**：同时拦截 `getaddrinfo`（curl/git/libcurl 走这条，返回完整失败转移列表）和 `gethostbyname`/`gethostbyname2` 及其 `_r` 线程安全变体（`getent hosts`、老程序走这条，返回首个 pin IP）；其它域名一律走真实解析，对系统无副作用。
 - **受管主机**：默认 `github.com api.github.com raw.githubusercontent.com objects.githubusercontent.com codeload.github.com gist.github.com`，可用 `GITHUB_ROAD_HOSTS` 覆盖。
-- **候选 IP 三级来源**：本地 DNS 当前答案 + 公共 DoH（AliDNS / Cloudflare / DNSPod，用 `curl --resolve` 钉住 DoH 自身 IP，防被污染 DNS 劫持，同时保留证书校验）+ 硬编码兜底池。每主机上限 `GITHUB_ROAD_MAX_CANDIDATES`（默认 16）。
+- **候选 IP 四级来源（按优先级）**：**已验证学习池** → 本地 DNS 当前答案 → 公共 DoH（AliDNS / Cloudflare / DNSPod，用 `curl --resolve` 钉住 DoH 自身 IP，防被污染 DNS 劫持，同时保留证书校验）→ 硬编码兜底池。每主机上限 `GITHUB_ROAD_MAX_CANDIDATES`（默认 16）。
+- **学习池** `~/.hermes/github-candidates`：`<hostname> <ip>` 每行一条（格式同 pin 文件，**可手工粘贴你知道的好 IP**）。每轮择优结束后，把**本轮通过服务校验**的 IP 前置写入（去重、每主机上限 `GITHUB_ROAD_MAX_LEARNED` 默认 12、`mktemp` + `mv` 原子替换）。存在的意义：硬编码池是一台运行中的机器上没人去更新的快照，而顶替它的 DoH 本身也是"能不能通"的问题（写这行时本机 3 个 DoH 里 Cloudflare 已不通）——没有沉淀，一个靠 DoH 发现的可用 IP 会在 DoH 不再返回它的那天永久消失。只收 IPv4（与 `libpin.so` 一致），非 IPv4 的行直接忽略，所以文件被写坏也不会把垃圾送进 curl 参数。
 - **判定"可用"的尺度是服务本身，不是状态码**：`HOST_PROBE` 表为每台主机声明 `路径:可接受状态码:必需的 Content-Type` 前缀，外加响应体下限 `GITHUB_ROAD_MIN_BODY`（默认 64 字节）。未列出的主机退回 `/:200:` + 体积下限，光凭下限就能否掉 4 字节的 `"OK"` 端点。改探测路径/期望值只动这张表，不用改逻辑。
 - **git 端点单独计分**：`github.com` 这类 git 主机除服务校验外还要过 `probe_git`（pkt-line 头匹配）。排序是（git 通过↓，服务通过↓，时延↑），所以"网页快但不懂 git"的 IP 永远不会挤掉真正能 `clone/push` 的 IP；若本轮**没有**任何 IP 提供 git 协议，脚本会明确输出"仅可用于 curl/API，git 仍需代理"，而不是假装成功。只验 `upload-pack`（fetch）**不验 `receive-pack`**（push）：健康的边缘对匿名 push 一律回 `401 No anonymous write access`，加这条检查会把所有候选判成坏的、结果一个 IP 都 pin 不上。
 - **`objects.githubusercontent.com` 复用 `raw` 的结论**：它的 URL 全部带签名，没有稳定路径可探；但和 `raw` 是同一个 Fastly anycast 边缘（同为 `185.199.10x.133`），所以直接继承 `raw` 胜出的 IP（`HOST_ALIAS`）。作为别名主机它不再消耗自己的候选探测预算，且**必须排在被别名主机之后**。
@@ -110,7 +114,7 @@ cat ~/.hermes/github-pin                # 看到 github.com / api.github.com 等
 - **SSH 推送（`ssh github.com` 22 或 443）无法在本方案下修复**：这类网络对 GitHub 的 SSH 端口整体超时/重置，与按 IP 轮换无关。请把远端改成 **HTTPS**（`https://github.com/<org>/<repo>.git`）。
 - **不经 libc 的程序拦不住**：静态链接且自带 DNS 解析的程序（如 Go 纯 Go resolver 编译的单体）、直接用 `res_query` 的工具（`dig`/`nslookup`）不调 `getaddrinfo`/`gethostbyname`，shim 对它们无效。测试时别用 dig 判断成败，用 `curl -w '%{remote_ip}'`。
 - **无 cron 守护进程时 crontab 自愈不执行**（容器/proot 常见）：`install.sh` 会警告，用 `github-road-daemon.sh` 常驻替代；机器重启后 daemon 需自行拉起（无 systemd 时放进启动脚本）。
-- 若运营商升级为"对 github.com 全量封锁"（所有 IP 全 reset），择优脚本会保留旧 pin 并标注 stale；候选全部失效且旧 pin 也过期时，需更新兜底池或改用代理。
+- 若运营商升级为"对 github.com 全量封锁"（所有 IP 全 reset），择优脚本会保留旧 pin 并标注 stale；候选全部失效且旧 pin 也过期时，需更新兜底池或改用代理。**更新兜底池不必改脚本**：把可用 IP 追加进 `~/.hermes/github-candidates` 即可（它优先级最高）；反之，网络恢复后新一轮择优会自动把重新验证通过的 IP 排到该文件最前。
 - **`LD_PRELOAD` 全局注入**：安装脚本把它写进 `~/.bashrc`，只重写 pin 中的域名，风险低；若担心，可改用 `gh-road-env.sh` 按需 `source`。
 - 择优结果依赖**当下**的探测；网络剧烈抖动时，每 30 分钟会重新择优劣化。
 
@@ -120,7 +124,7 @@ cat ~/.hermes/github-pin                # 看到 github.com / api.github.com 等
 |---|---|
 | `libpin.c` | `LD_PRELOAD` shim：拦截 `getaddrinfo`（多 IP 失败转移）与 `gethostbyname`/`gethostbyname2`（含 `_r` 变体，返回首个 pin IP）；读取 pin 文件。 |
 | `libpin.so` | `install.sh` 用 gcc 编译产物（运行期依赖，不纳入版本库）。 |
-| `select-github-ip.sh` | 择优核心：DoH/本地 DNS/兜底池三级候选，并行探测；按"该主机是否真的提供对应服务"（`HOST_PROBE`）+ git 协议端点计分，排序写 top-K；全挂时保留旧 pin（stale 标注）。 |
+| `select-github-ip.sh` | 择优核心：学习池/本地 DNS/DoH/兜底池四级候选，并行探测；按"该主机是否真的提供对应服务"（`HOST_PROBE`）+ git 协议端点计分，排序写 top-K，并把验证过的 IP 沉淀回学习池；全挂时保留旧 pin（stale 标注）。 |
 | `install.sh` | 一键安装：编译 + 初次择优 + bashrc 钩子 + crontab 自愈（幂等）+ cron 守护进程检测。 |
 | `github-road-daemon.sh` | 常驻自愈 loop（flock 单实例，TERM 立即退出）：无 cron 守护进程时替代 crontab。 |
 | `uninstall.sh` | 卸载 bashrc / crontab 钩子。 |
