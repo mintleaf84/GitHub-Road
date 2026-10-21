@@ -28,4 +28,5 @@ else
     echo "[uninstall] no crontab entry found"
 fi
 
-echo "[uninstall] done. (pin file and libpin.so kept; delete \$HOME/.hermes/github-pin to fully revert)"
+echo "[uninstall] done. (pin file, learned pool and libpin.so kept;"
+echo "            delete \$HOME/.hermes/github-pin and \$HOME/.hermes/github-candidates to fully revert)"
