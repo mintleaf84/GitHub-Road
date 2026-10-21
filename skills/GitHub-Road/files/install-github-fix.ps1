@@ -6,7 +6,7 @@
 #   2. 注册计划任务（默认 DSH-GitHubFix，每 30 分钟自动运行一次，隐藏窗口）
 #      任务设置：允许电池供电时运行、错过时间自动补跑、并发新实例忽略、
 #                运行时限 30 分钟、最高权限、仅当前用户登录时运行
-# 要求：本文件必须与 fix-github.ps1 放在同一个文件夹；文件夹路径不能含空格。
+# 要求：本文件必须与 fix-github.ps1、fix-github-quiet.vbs 放在同一个文件夹；文件夹路径不能含空格。
 # 注意：本文件必须保存为 UTF-8 带 BOM。
 # ============================================================
 
@@ -20,7 +20,8 @@ $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.
 $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     Write-Host '[!] 需要管理员权限，正在请求提权 —— 请在弹窗（UAC）中点击「是」…'
-    $p = Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs -Wait -PassThru
+    $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -TaskName `"$TaskName`" -Minutes $Minutes"
+    $p = Start-Process powershell -ArgumentList $argList -Verb RunAs -Wait -PassThru
     exit $p.ExitCode
 }
 

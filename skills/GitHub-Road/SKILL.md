@@ -50,7 +50,7 @@ description: 让普通用户在中国大陆稳定访问 GitHub 官网（hosts �
 
 ## 安装（普通用户 5 分钟）
 
-1. 把本技能 `files/` 里的 **`fix-github.ps1`** 和 **`install-github-fix.ps1`** 复制到同一个文件夹，**路径不要含空格**（如 `D:\GitHubRoad\`）
+1. 把本技能 `files/` 目录整体复制到一个**路径不含空格**的文件夹（如 `D:\GitHubRoad\`）；安装至少需要其中的 **`fix-github.ps1`**、**`install-github-fix.ps1`** 和 **`fix-github-quiet.vbs`**
 2. **双击 `install-github-fix.ps1`** → 出现 UAC 弹窗 → 点**「是」**
 3. 黑色窗口自动完成两步（立即修复 + 注册计划任务），约 1~3 分钟，**跑完自动关闭，无需按键**
 4. 打开浏览器访问 `https://github.com`；若打不开，**重启浏览器**或按 `Ctrl+F5` 强制刷新（浏览器会缓存旧 DNS）
